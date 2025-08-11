@@ -1,37 +1,47 @@
-DROP TABLE IF EXISTS users_cumulated
+-- Drop the table if it already exists to start fresh
+DROP TABLE IF EXISTS users_cumulated;
+
+-- Create a table to store cumulative user activity data
 CREATE TABLE users_cumulated(
-	user_id TEXT,
-	dates_active DATE[],
-	date DATE,
-	PRIMARY KEY (user_id, date)
-)
+    user_id TEXT,
+    dates_active DATE[],     -- array to store all active dates for the user
+    date DATE,               -- current date representing this record’s snapshot
+    PRIMARY KEY (user_id, date)
+);
 
-
+-- Get the snapshot of user activity from the previous day (Dec 31, 2022)
 WITH yesterday AS (
-	SELECT * FROM users_cumulated 
-	WHERE date = DATE '2022-12-31'
-),today AS (
-	SELECT CAST(user_id AS TEXT), COUNT(1),DATE(event_time) AS date_active
-	FROM events 
-	WHERE DATE(event_time) = DATE '2023-01-01'
-	AND user_id IS NOT NULL
-	GROUP BY user_id,DATE(event_time)
+    SELECT * FROM users_cumulated 
+    WHERE date = DATE '2022-12-31'
+),
+
+-- Aggregate today's events to count activity and get active date per user (Jan 1, 2023)
+today AS (
+    SELECT 
+        CAST(user_id AS TEXT),             -- ensure user_id is text type
+        COUNT(1),                         -- count of events for that user (not used in final query here though)
+        DATE(event_time) AS date_active   -- active date for this event batch
+    FROM events 
+    WHERE DATE(event_time) = DATE '2023-01-01'  -- filter for the day Jan 1, 2023
+      AND user_id IS NOT NULL                     -- exclude null user IDs
+    GROUP BY user_id, DATE(event_time)            -- group by user and day
 )
 
-
+-- Insert new cumulative records combining yesterday and today’s active dates
 INSERT INTO users_cumulated
-SELECT COALESCE(t.user_id,y.user_id),
+SELECT 
+    COALESCE(t.user_id, y.user_id),       -- use today’s user_id if exists, otherwise yesterday’s
 
-/*cumulate active dates*/
-CASE 
-	WHEN y.dates_active IS NULL THEN ARRAY[t.date_active]
-	WHEN t.date_active IS NULL THEN y.dates_active
-	ELSE ARRAY[t.date_active] || y.dates_active 
-	END
-	AS dates_active,
-	
-COALESCE(t.date_active,y.date+Interval '1 day') AS date
+    /* Combine active dates arrays */
+    CASE 
+        WHEN y.dates_active IS NULL THEN ARRAY[t.date_active]     -- if no previous dates, start with today’s date
+        WHEN t.date_active IS NULL THEN y.dates_active             -- if no today’s activity, keep old dates
+        ELSE ARRAY[t.date_active] || y.dates_active                -- else append today’s date to old dates array
+    END AS dates_active,
+
+    -- For the 'date' field, use today's active date if available; else increment yesterday’s date by 1 day
+    COALESCE(t.date_active, y.date + INTERVAL '1 day') AS date
 
 FROM today t
 FULL OUTER JOIN yesterday y
-ON t.user_id = y.user_id 
+    ON t.user_id = y.user_id              -- join on user_id to combine old and new data
